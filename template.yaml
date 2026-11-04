@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Simple message webhook - post JSON to any path, read it back
+
+Parameters:
+  WriteKeyParameterName:
+    Description: SSM SecureString holding the key for posting messages
+    Type: String
+    Default: /simple-message-webhook/write-key
+  ReadKeyParameterName:
+    Description: SSM SecureString holding the key for reading messages
+    Type: String
+    Default: /simple-message-webhook/read-key
+
+Globals:
+  Function:
+    Runtime: python3.14
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 10
+
+Resources:
+  MessagesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: inbox
+          AttributeType: S
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: inbox
+          KeyType: HASH
+        - AttributeName: id
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: webhook.handler.handler
+      FunctionUrlConfig:
+        AuthType: NONE  # keys are checked in the app
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref MessagesTable
+          WRITE_KEY_PARAMETER: !Ref WriteKeyParameterName
+          READ_KEY_PARAMETER: !Ref ReadKeyParameterName
+          POWERTOOLS_SERVICE_NAME: simple-message-webhook
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MessagesTable
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${WriteKeyParameterName}'
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ReadKeyParameterName}'
+
+  WebhookLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${WebhookFunction}'
+      RetentionInDays: 3  # logs hold payloads; match the message TTL
+
+Outputs:
+  WebhookUrl:
+    Description: Base URL; any path below it is an inbox
+    Value: !GetAtt WebhookFunctionUrl.FunctionUrl
